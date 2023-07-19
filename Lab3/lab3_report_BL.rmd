@@ -1,0 +1,635 @@
+---
+title: "Bayesian Learning - Lab3"
+author: "Jaskirat S Marar & Dinuke Jayaweera"
+date: "5/3/2022"
+output: pdf_document
+header-includes: \usepackage[makeroom]{cancel}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mvtnorm)
+library(LaplacesDemon)
+library(rstan)
+```
+
+# GIBBS SAMPLER
+
+```{r}
+
+# QUES 1: GIBBS SAMPLER
+
+prec_data <- readRDS("precipitation.rds")
+
+log_data <- log(prec_data)
+
+par(mfrow = c(1,2))
+hist(log_data, breaks = 40, prob = TRUE)
+hist(prec_data, breaks = 40, prob = TRUE)
+```
+## PART A
+
+We first set up the priors and posteriors as follows:
+
+*PRIORS:*
+
+$$
+\\ \mu \sim N(\mu_0, \tau_0^2)
+$$
+$$
+\\ \sigma^2 \sim Inv-\chi^2(\nu_0,\sigma_0^2)
+$$
+*FULL CONDITIONAL POSTERIORS:*
+
+*$\mu$*
+$$
+\\ \mu|\sigma^2,x \sim N(\mu_n, \tau_n^2) \\
+$$
+$$
+\\ where, \ \mu_n = w*(\bar x) + (1-w)*\mu_0 , \\
+$$
+$$
+\\ \frac{1}{\tau_n^2} = \frac{1}{(\frac{n}{\sigma^2} + \frac{1}{\tau_0^2})} , \\
+$$
+$$
+\\ w = \frac{\frac{n}{\sigma^2}}{(\frac{n}{\sigma^2} + \frac{1}{\tau_0^2})}
+$$
+
+*$\sigma^2$*
+$$
+\\ \sigma^2|\mu, x \sim Inv-\chi^2 \Big ( \nu_n,\frac{\nu_0 \sigma_0^2 + \sum_{i=1}^{1}{(x_i - \mu)^2}}{n + \nu_0} \Big ) \\
+$$
+$$
+\\ where, \ \nu_n = \nu_0 + n \\
+$$
+
+We'll have to initialize some values for the parameters of the priors. For $\mu_0$ & $\sigma^2_0$ we choose the sample mean and sample variance. For $\nu_0$ & $\tau_0^2$ we choose to initialize them to 1 since the data is log normally distributed.
+
+```{r}
+
+#PART A
+
+# setting up the initial values of the priors
+
+n = length(log_data)
+
+# for mu
+mu0 = mean(log_data)
+tau20 = 1
+# for sigma
+sig20 = var(log_data)
+nu0 = 1
+
+set.seed(1234)
+
+#Gibbs Sampling function
+Gibbs_sampler <- function(steps = 500, 
+                          mu_0 = mu0, 
+                          tau2_0 = tau20, 
+                          sig2_0 = sig20, 
+                          nu_0 = nu0,
+                          n = length(log_data)){
+  
+  #initial value for gibbs sampler
+  mu_i = rnorm(1, mean = mu_0, sd = sqrt(tau2_0))
+  sigma2_i =  rinvchisq(1, df = nu_0, scale = sig2_0)
+  
+  #initialize result DF
+  sample_results = data.frame("mu" = mu_i,
+                              "sigma2" = sigma2_i)
+  
+  #initialize loop over specified gibbs steps
+  for (i in 1:steps) {
+    
+    #gibbs step for mu
+    w = n/sigma2_i / (n/sigma2_i + 1/tau2_0)
+    mu_n = w * mean(log_data) + (1-w) * mu_0
+    tau2_n = (n/sigma2_i + 1/tau2_0)^-1
+    mu_i = rnorm(1, mean = mu_n, sd = sqrt(tau2_n))
+    
+    #gibbs step for sigma
+    nu_n = nu_0 + n
+    scale_term = (nu_0 * sigma2_i + sum((log_data - mu_i)^2))/nu_n
+    sigma_i = rinvchisq(1, df = nu_n, scale = scale_term)
+    
+    #IF
+    #IF_mu = 1 + 2*(sum(cor(sample_results[i,1], mu_i)))
+    
+    #save step values to DF
+    sample_results = rbind.data.frame(sample_results, c(mu_i, sigma_i))
+    
+  }
+  
+  return(sample_results)
+
+}
+
+joint_posterior <- Gibbs_sampler(steps = 500)
+
+#autocorrelation
+par(mfrow = c(2,1))
+mu_Gibbs <- acf(joint_posterior[,1])
+sig2_Gibbs <- acf(joint_posterior[,2])
+
+#inefficiency factor
+IF_Gibbs_mu <- 1+2*sum(mu_Gibbs$acf[-1])
+IF_Gibbs_sig2 <- 1+2*sum(sig2_Gibbs$acf[-1])
+
+cat("\n", "IF of mu:", round(IF_Gibbs_mu,3))
+cat("\n", "IF of sigma2:", round(IF_Gibbs_sig2,3))
+
+#trace plot
+par(mfrow = c(2,1))
+plot(1:length(joint_posterior$mu), joint_posterior[,1], type = "l",col="blue", xlab = "steps", ylab = "mu")
+plot(1:length(joint_posterior$sigma2), joint_posterior[,2], type = "l",col="blue", xlab = "steps", ylab = "sigma2")
+
+```
+From the trace plots its very clear that the burn-in period is very short and that both chains converge very quickly.
+
+## PART B
+
+Since the data is log normally distributed and we've modelled the posterior on the log(data), we can use the posterior draws and exponentiate them to compare to the original data.
+
+```{r}
+# PART B
+
+set.seed(1234)
+post_pred <- c()
+post_burnremoved <- joint_posterior[51:length(joint_posterior$mu),]
+for (i in 1:(length(post_burnremoved$mu))){
+  post_pred[i] = rnorm(1, mean = post_burnremoved[i,1], sd = sqrt(post_burnremoved[i,2]))
+}
+
+e_post_draws <- exp(post_pred)
+
+
+plot(density(prec_data), 
+     col = "blue", 
+     ylim = c(0,0.2), 
+     xlim = c(-10,100),
+     main = "Posterior Prediction vs Y")
+lines(density(e_post_draws), 
+      col = "red")
+
+```
+
+
+\newpage
+
+# METROPOLIS RANDOM WALK
+
+
+## PART A
+```{r}
+# QUES 2: METROPOLIS RW
+
+rm(list = ls())
+
+data <- read.table("eBayNumberOfBidderData.dat", header = T)
+
+
+# PART A
+
+#drop intercept
+data_nointercept <- data[,-2]
+
+glm_model <- glm(nBids ~ ., family = poisson, data = data_nointercept)
+summary(glm_model)
+
+```
+Looking at the glm model output, we can see that the most significant features can be decided based on high abs($\beta$) value with very small p-values. They are listed below:
+
+1. MinBidShare
+2. Intercept
+3. Sealed
+4. VerifyID
+5. LogBook
+
+## PART B
+
+```{r}
+# PART B
+#split response and features
+response <- as.matrix(data$nBids)
+covariates <- as.matrix(data[,2:10])
+
+```
+
+*Log-Likelihood:*
+
+$$
+\\ Poisson \ PMF: \ P(Y|X,\beta) = \frac{\lambda^Y}{Y!}exp(-\lambda) \ where; \ \lambda = exp(X^T\beta) \\
+$$
+$$
+\\ P(y_i|x_i,\beta) = \prod_i \frac{exp(y_i*x_i^T\beta)*exp(-e^{x_i^T\beta})}{y_i!} \\
+$$
+$$
+\\ L(\beta|X,Y) = \prod_i \frac{exp(y_i*x_i^T\beta)*exp(-e^{x_i^T\beta})}{y_i!} \\
+$$
+$$
+\\ taking \ logs \ both \ sides \\
+$$
+$$
+\\ log L(\beta|X,Y) = \sum_i \Big(y_i*x_i^T\beta - e^{x_i^T\beta} - \cancel{log(y_i!)} \Big)
+$$
+$$
+\\ log L(\beta|X,Y) = \sum_i \Big(y_i*x_i^T\beta - e^{x_i^T\beta} \Big)
+$$
+*Zellner's g-Prior:*
+$$
+\\ \beta \sim N(0, 100*(X^T X)^{-1})
+$$
+```{r}
+#log posterior
+
+logPost <- function(beta, 
+                    X = covariates, 
+                    Y = response){
+  
+  loglik <- sum(Y * (X %*% beta) - exp(X %*% beta))
+  logprior <- dmvnorm(t(beta), mean = matrix(0, nrow = ncol(X)), sigma = (100*(solve(t(X) %*% X))), log = T)
+  return(loglik + logprior)
+
+}
+
+#optimize log posterior
+
+opt_res <- optim(par = matrix(1, nrow = 9),
+                 fn = logPost,
+                 method = "BFGS",
+                 control = list(fnscale = -1),
+                 hessian = TRUE)
+
+beta_mode <- opt_res$par
+inv_jacobian <- -solve(opt_res$hessian)
+
+rownames(beta_mode) <- colnames(covariates)
+
+t(beta_mode)
+glm_model$coefficients
+```
+We can see that the approximate posterior mode is very close to the MLE from the glm model.
+
+## PART C
+
+The metropolis algorithm will take any arbitrary posterior, which in this case that will be the log posterior & the tuning parameter c. The proposal density is given to be multivariate normal:
+
+$$
+\\ \theta_p|\theta^{i-1} \sim N(\theta^{i-1},c.\Sigma)
+$$
+*Parameter selection:*
+
+*Target Density Prior:* For a fair comparison with part B of this question, we choose the same values as the prior parameters for beta as in the previous part.
+
+*Proposal Density:* "$\Sigma$ & $\theta^{i-1}$ are initialized with the values calculated at the mode of the posterior in the previous step. 
+
+```{r}
+# PART C
+
+# Metropolis Random Walk function
+RMW_func <- function(target_density,
+                     c,
+                     theta_i_1,
+                     sigma_proposal,
+                     steps,
+                     X,
+                     Y){
+  
+  set.seed(12345)
+  
+  # initialize result matrix
+  result <- matrix(t(theta_i_1), ncol = 9)
+  
+  accept = 0
+  
+  for (i in 1:steps) {
+    
+    #sample from the proposal distribution
+    theta_p <- rmvnorm(1,
+                       mean = as.vector(theta_i_1), 
+                       sigma = c*sigma_proposal)
+    
+    #calculate the ratio for the acceptance probability
+    ratio = ((target_density(as.vector(theta_p), X, Y)) 
+             - (target_density(as.vector(theta_i_1), X, Y)))
+    
+    #since target & proposal is defined in log form, we exponentiate to revert
+    ratio = exp(ratio)
+    
+    #calculate alpha
+    alpha = min(1,ratio)
+    
+    #draw from uniform
+    u <- runif(1)
+    
+    #run test
+    if(u < alpha){
+      accept = accept + 1
+      theta_i_1 = theta_p
+      result <- rbind(result, theta_i_1)
+    }
+    else {
+      result = rbind(result, as.vector(theta_i_1))
+    }
+    
+  }
+  
+  return(list(result = result, acceptance = accept/steps))
+  
+}
+```
+
+
+```{r}
+# choose same params for the prior of target density
+# choose data observed at mode for theta(i-1) & sigma for proposal density
+sigma_proposal <- inv_jacobian
+#theta_init <- beta_mode
+theta_init <- matrix(rep(0.5,9), nrow = 9)
+
+test_mrw <- RMW_func(target_density = logPost,
+                     c = 0.6,
+                     theta_i_1 = theta_init,
+                     sigma_proposal = sigma_proposal,
+                     steps = 5000,
+                     X = covariates,
+                     Y = response)
+
+MRW_coeff <- test_mrw$result
+MRW_coeff_means <- apply(MRW_coeff, 2, mean)
+names(MRW_coeff_means) <- rownames(beta_mode)
+MRW_coeff_means
+
+```
+
+The choice of initial values of the $\theta_{i-1}$ has an impact on how many steps we need for convergence in the random walk. When we chose the posterior mode from the previous analysis, then understandably we needed very few steps for convergence, since the random walk algorithm doesn't have to move too much farther from the initial values to get to the actual mode. But if we initiate with very randomly chosen values for eg. 0, then we have to adjust accordingly for the burn in period. So, in order to show convergence of parameters properly, we chose a starting point of 0.5 for all coefficients. We are able to see convergence pretty soon on all chains, but to get a fairly stable result we need to run the sampler for 5000 steps, we are getting coefficient values in the neighborhood of what we got earlier from MLE and Bayesian analysis. We played around with different values of the tuning parameter 'c' to get a fair acceptance rate. With a value of 0.6, we are able to hit an acceptance rate of ~28% which is within the prescribed range. We plot the convergence of the coefficients as follows:
+
+```{r}
+colnames(MRW_coeff) <- rownames(beta_mode)
+
+par(mfrow = c(3,3))
+
+plot(MRW_coeff[,1], type = 'l', ylab = "Constant", xlab = "steps")
+plot(MRW_coeff[,2], type = 'l', ylab = "PowerSeller", xlab = "steps")
+plot(MRW_coeff[,3], type = 'l', ylab = "VerifyID", xlab = "steps")
+plot(MRW_coeff[,4], type = 'l', ylab = "Sealed", xlab = "steps")
+plot(MRW_coeff[,5], type = 'l', ylab = "Minblem", xlab = "steps")
+plot(MRW_coeff[,6], type = 'l', ylab = "Majblem", xlab = "steps")
+plot(MRW_coeff[,7], type = 'l', ylab = "LargNeg", xlab = "steps")
+plot(MRW_coeff[,8], type = 'l', ylab = "LogBook", xlab = "steps")
+plot(MRW_coeff[,9], type = 'l', ylab = "MinBidShare", xlab = "steps")
+
+```
+## PART D
+
+We'll now use the MCMC draws of the coefficients from the previous step as the $\beta$ parameters to the given poisson regression model:
+
+$$
+\\ y_i|\beta \ \  \widetilde{iid} \ Poisson[exp(x_i^T \beta)] \\
+$$
+
+To find the distribution of $\lambda$ as a linear combination, we will use the given features as X in the above model and the MCMC draws as $\beta s$. We'll then use the fitted $\lambda$s to draw from the poisson distribution to get a posterior prediction for the model. 
+
+```{r}
+# PART D
+
+sample <- as.matrix(c(1, 1, 0, 1, 0, 1, 0, 1.2, 0.8), nrow = 9)
+names(sample) <- rownames(beta_mode)
+posterior_samples <- MRW_coeff[301:length(MRW_coeff[,1]),]
+
+linear_predictions <- posterior_samples %*% sample
+lambda_predictons <- exp(linear_predictions)
+
+sample_predictions <- c()
+
+set.seed(12345)
+for (i in 1:length(lambda_predictons)){
+  sample_predictions[i] <- rpois(1, lambda_predictons[i])
+}
+
+hist(sample_predictions, breaks = 20)
+
+cat("\n", "Probability of no bids on the test data:",length(which(sample_predictions == 0))/length(sample_predictions))
+
+```
+Based on our draws we can say that the probability that there are no bids for a listing with these features is about 50%.
+
+\newpage
+
+# TIME SERIES MODELS
+
+*AR(1) Process:*
+
+$$
+x_t = \mu + \phi(x_{t-1} - \mu) + \varepsilon_t \ ; \ where \ \varepsilon_t \ \widetilde{iid} \ N(0,\sigma^2)
+$$
+
+## PART A
+
+```{r}
+
+# QUES 3: TIME SERIES
+
+rm(list = ls())
+
+AR <- function(mu = 13, 
+               phi = c(-0.95, -0.5, 0, 0.25, 0.75, 0.95), 
+               sigma2 = 3, 
+               T = 300) {
+  
+  chains = data.frame(0, ncol = length(phi))
+  
+  for (i in 1:length(phi)){
+    
+    x_t <- mu
+    chains[1,i] = x_t
+    
+    for (j in 2:T){
+      
+      x_t = mu + phi[i] * (x_t - mu) + rnorm(1, 0 , sqrt(sigma2))
+      chains[j,i] = x_t
+
+    }
+    
+  }
+  
+  colnames(chains) <- paste("phi_",phi)
+  
+  return(chains)
+  
+}
+
+test_AR1 <- AR()
+
+par(mfrow = c(3,3))
+plot(y = test_AR1[,1], x = c(1:300), type = 'l', ylab = "phi = -0.95", xlab = "T")
+plot(y = test_AR1[,2], x = c(1:300), type = 'l', ylab = "phi = -0.5", xlab = "T")
+plot(y = test_AR1[,3], x = c(1:300), type = 'l', ylab = "phi = 0", xlab = "T")
+plot(y = test_AR1[,4], x = c(1:300), type = 'l', ylab = "phi = 0.25", xlab = "T")
+plot(y = test_AR1[,5], x = c(1:300), type = 'l', ylab = "phi = 0.75", xlab = "T")
+plot(y = test_AR1[,6], x = c(1:300), type = 'l', ylab = "phi = 0.95", xlab = "T")
+
+```
+For lower values of $\phi$ we can see that the error term of the AR(1) process i.e. $\varepsilon_t$ has a much larger impact on the next prediction as the $\mu$ dependent terms cancel out each others effect on the prediction, thus resulting in a negative correlation. But as we go towards a larger value of $\phi$, the first 2 terms dependent on $\mu$ become additive and we see a stronger positive correlation in the chain for every subsequent prediction. To better depict whats going on with the chains, we plot the ACFs for them:
+
+```{r}
+par(mfrow = c(2,3))
+sapply(test_AR1, function(x) acf(x, main=""))
+
+```
+
+As we can infer from the ACF plots, for a positive value of the $\phi$ with increasing lag, the autocorrelation keeps decreasing. Whereas for a negative value of $\phi$ the autocorrelation keeps oscillating between consecutive lags. For $\phi = 0$, the successive values are independent of each other as the only variation is due to the normally distributed white noise.
+
+## PART B
+
+Now we are assuming the three parameters $\mu, \sigma^2 \ and \ \phi$ to be unknown and are going to assume non-informative priors for them as follows:
+
+1. $\mu \sim N(0,50)$ ; going with what we have used earlier for modelling $\mu$ for a normal model
+2. $\sigma^2 \sim Inv-\chi^2(1,10)$ ; since we used the inverse-$\chi^2$ distribution to model $\sigma^2$ for a normal model
+3. $\phi \sim Unif(-1,1)$ ; since we know the interval for phi
+
+Since, it can be shown that if the white noise $\varepsilon_t$ is gaussian then the AR(1) process for $x_t$ is also gaussian with the following parameters:
+
+$$
+\\ x_t|x_{t-1} \sim N(\mu + \phi(x_{t-1} - \mu), \sigma^2_{\varepsilon})
+$$
+
+
+```{r}
+# PART B
+
+model_AR <- AR(phi = c(0.2, 0.95))
+
+StanModel = '
+data {
+  int<lower=0> T; // Number of observations
+  vector[T] x;  // indicating the chain x over T obs
+}
+parameters {
+  real mu;
+  real<lower = 0> sigma2;
+  real<lower = -1, upper = 1> phi;
+}
+model {
+  mu ~ normal(0,50); // Normal with mean 0, st.dev. 50
+  sigma2 ~ scaled_inv_chi_square(1,10); // Scaled-inv-chi2 with nu 1,sigma 10
+  phi ~ uniform(-1,1);
+  
+  for(i in 2:T){
+    x[i] ~ normal(mu + phi * (x[i-1] - mu), sqrt(sigma2));
+  }
+}'
+
+#fit model for phi 0.2
+fit_0.2 = stan(model_code = StanModel,
+               data = list(x = model_AR$`phi_ 0.2`, T = 300),
+               warmup = 1000,
+               iter = 2000,
+               chains = 4)
+
+#fit model for phi 0.95
+fit_0.95 = stan(model_code = StanModel,
+               data = list(x = model_AR$`phi_ 0.95`, T = 300),
+               warmup = 1000,
+               iter = 2000,
+               chains = 4)
+
+```
+
+
+
+```{r}
+
+#PART B.i
+#get posterior samples and means
+post_samples_0.2 <- extract(fit_0.2)
+post_mean_0.2 <- get_posterior_mean(fit_0.2)
+
+post_samples_0.95 <- extract(fit_0.95)
+post_mean_0.95 <- get_posterior_mean(fit_0.95)
+
+cat("\n")
+print("Posterior Means when phi = 0.2 :")
+cat("\n")
+print(post_mean_0.2)
+
+
+cat("\n")
+print("Posterior Means when phi = 0.95 :")
+cat("\n")
+print(post_mean_0.95)
+
+
+
+post_samples_0.2_df <- data.frame(mu = post_samples_0.2$mu,
+                                  sigma2 = post_samples_0.2$sigma2,
+                                  phi = post_samples_0.2$phi)
+
+CI_0.2 <- sapply(post_samples_0.2_df, function(x) quantile(x, probs=c(0.025, 0.975)))
+
+post_samples_0.95_df <- data.frame(mu = post_samples_0.95$mu,
+                                  sigma2 = post_samples_0.95$sigma2,
+                                  phi = post_samples_0.95$phi)
+
+CI_0.95 <- sapply(post_samples_0.95_df, function(x) quantile(x, probs=c(0.025, 0.975)))
+
+cat("\n")
+print("Posterior 95% CI when phi = 0.2 :")
+cat("\n")
+print(CI_0.2)
+
+cat("\n")
+print("Posterior 95% CI when phi = 0.95 :")
+cat("\n")
+print(CI_0.95)
+
+```
+Yes, we are able to estimate the true values of the parameters with reasonable width of CIs. But in case of the model for $\phi = 0.95$, the CI for $\mu$ is very wide as compared to the other model.
+
+```{r}
+#PART B.ii.
+
+#plotting the two models
+par(mfrow = c(2,1))
+plot(y = model_AR[,1], x = c(1:300), type = 'l', ylab = "phi = 0.2", xlab = "T")
+plot(y = model_AR[,2], x = c(1:300), type = 'l', ylab = "phi = 0.95", xlab = "T")
+
+#checking convergence of the samplers
+par(mfrow = c(3,2))
+plot(post_samples_0.2$mu, type = 'l', ylab = "posterior Mu", main = "phi = 0.2")
+plot(post_samples_0.95$mu, type = 'l', ylab = "posterior Mu", main = "phi = 0.95")
+plot(post_samples_0.2$sigma2, type = 'l', ylab = "posterior Sigma2", main = "phi = 0.2")
+plot(post_samples_0.95$sigma2, type = 'l', ylab = "posterior Sigma2", main = "phi = 0.95")
+plot(post_samples_0.2$phi, type = 'l', ylab = "posterior phi", main = "phi = 0.2")
+plot(post_samples_0.95$phi, type = 'l', ylab = "posterior phi", main = "phi = 0.95")
+
+#joint posterior
+par(mfrow = c(1,2))
+plot(x = post_samples_0.2_df$mu,
+     y = post_samples_0.2_df$phi,
+     main = "phi = 0.2",
+     xlab = "mu",
+     ylab = "phi")
+plot(x = post_samples_0.95_df$mu,
+     y = post_samples_0.95_df$phi,
+     main = "phi = 0.95",
+     xlab = "mu",
+     ylab = "phi")
+
+```
+
+All the parameter chains are converging pretty quickly. From the joint posterior it is evident that the estimate for $\mu$ is more accurate for the model with $\phi = 0.2$ than the other model. An explanation for this can be that since the sample mean in an AR(1) process with a shifted mean (as is the case here), is $\sim N(0,\sigma^2/(1-\phi)^2)$, the CI for the sample mean is then given by: 
+
+$$
+\\ C.I._{.95}(\mu) = \bar{x}_n \pm \frac{1.96}{\sqrt n}\Big(\frac{\sigma}{|1 - \phi|} \Big)
+$$
+From this expression we can concur that the CI for the mean will be much wider when the $\phi$ is small. From the joint posterior plots we can draw a similar inference that as the value of $phi$ starts approaching 1, the stationary properties start getting lost and the distribution of $\mu$ becomes very wide.
+
+
+\newpage
+
+# APPENDIX: CODE
+
+
+```{r ref.label= knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
